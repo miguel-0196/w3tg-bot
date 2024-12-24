@@ -1,0 +1,6 @@
+python-telegram-bot
+selenium
+beautifulsoup4
+pyinstaller
+solana
+python-dotenv
