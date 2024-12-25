@@ -3,6 +3,7 @@ import re
 import sys
 import time
 import json
+import sqlite3
 import datetime
 import requests
 
@@ -18,8 +19,8 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # Environment variables
 load_dotenv()
-BAL_LIMIT = int(os.getenv("BAL_LIMIT"))
-SOL_PRICE = float(os.getenv("SOL_PRICE"))
+BAL_LIMIT = int(os.getenv("BAL_LIMIT")) if os.getenv("BAL_LIMIT") else 100
+SOL_PRICE = float(os.getenv("SOL_PRICE")) if os.getenv("SOL_PRICE") else 199.21
 TG_TOKEN = os.getenv("TG_TOKEN")
 
 # Some urls
@@ -27,12 +28,12 @@ base_url = 'https://debank.com/profile/'
 tron_url = 'https://tronscan.org/#/address/'
 sola_url = 'https://solscan.io/account/'
 
-chat_id = "" # argument
+chat_id = "main"
 
 # Send telegram message
 def send_telegram_msg(message):
     global TG_TOKEN, chat_id
-    if chat_id.isdigit():
+    if chat_id.isdigit(): # arg!
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage?chat_id={chat_id}&text={message}"
         requests.get(url).json() # this sends the message
     else:
@@ -85,6 +86,42 @@ def get_sol_balance(address):
     else:
         return 0
 
+# Function to create a database and a table, then insert a record
+def add_record_to_db(addr, bal, age = None, pro = None, sum = None, last = None):
+    global chat_id
+    db_name = 'output.db'
+    table_name = chat_id
+
+    # Connect to the SQLite database
+    conn = sqlite3.connect(db_name)
+    cursor = conn.cursor()
+
+    # Create table if it doesn't exist
+    cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS "{table_name}" (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            addr TEXT NOT NULL,
+            bal INTEGER,
+            age TEXT,
+            pro REAL,
+            sum INTEGER,
+            last TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            che INTEGER DEFAULT 0,
+            comment TEXT
+        )
+    ''')
+
+    # Insert a new record
+    cursor.execute(f'''
+        INSERT INTO "{table_name}" (addr, bal, age, pro, sum, last) VALUES (?, ?, ?, ?, ?, ?)
+    ''', (addr, bal, age, pro, sum, last))
+
+    # Commit the changes and close the connection
+    cursor.close()
+    conn.commit()
+    conn.close()
+
 # Chrome driver instance
 def chrome_driver():
     options = webdriver.ChromeOptions()
@@ -113,11 +150,17 @@ def get_html_with_request(url, xpath = None):
         time.sleep(1)
     return driver.page_source
 
+def close_request_driver():
+    global count, driver
+    count = 0
+    driver.close()
+    driver.quit()
+
 # Parsing debank info
 def parse_wallet_info(soup):
     # Find total balance
     el1 = soup.find('div', attrs={'class': 'HeaderInfo_totalAssetInner__HyrdC'})
-    bal = re.sub(r'[\+\-].*$', '', el1.get_text().replace(',', '')) if el1 != None else '-'
+    bal = re.sub(r'[\+\-].*$', '', el1.get_text().replace(',', '')) if el1 != None else None
 
     # Find active date
     el2 = soup.find('div', attrs={'class': 'db-user-tag is-age'})
@@ -135,7 +178,11 @@ def parse_wallet_info(soup):
         if len(spans) == 2:
             sum = sum + int(spans[1].get_text().replace("$","").replace("K","000").replace("M","000000"))
 
-    return bal, age, pro, sum
+    # Find last time
+    el5 = soup.find('div', attrs={'class': 'History_sinceTime__yW4eC'})
+    last = el5.get_text() if el5 != None else '-'
+
+    return bal, age, pro, sum, last
 
 # Parsing tron info
 def parse_tron_info(soup):
@@ -173,7 +220,7 @@ def get_balance(line, errNotify, outputFile):
                     append_file(f'{line}:${int(bal*SOL_PRICE)}:{bal}SOL\n', outputFile)
 
                     if bal > 0:
-                        send_telegram_msg(f"{sola_url}{line}\nPrice: ${int(bal*SOL_PRICE)}\nBal: {bal} SOL")
+                        send_telegram_msg(f"ALERT: {bal} SOL\nURL: {sola_url}{line}")
 
                 return True
 
@@ -190,53 +237,59 @@ def get_balance(line, errNotify, outputFile):
     except Exception as inst:
         append_file(f'{wallet_address}:ERROR1:{target_url}\n', outputFile)
         if errNotify == True:
-            send_telegram_msg(f"{target_url}\nFailed to get the page!\n{str(inst)}")
+            send_telegram_msg(f"ERROR: Failed to get the page!\n{str(inst)}\nURL: {target_url}")
         return False
 
     try:
+        bal, age, pro, sum, last = None, None, None, None, None
+
         soup = BeautifulSoup(html, 'html.parser')
         if tron_flag == True:
             bal, age = parse_tron_info(soup)
-            append_file(f'{wallet_address}:{bal}:{age}\n', outputFile)
         else:
-            bal, age, pro, sum = parse_wallet_info(soup)
-            append_file(f'{wallet_address}:{bal}:{age}:{pro}:{sum}\n', outputFile)
+            bal, age, pro, sum, last = parse_wallet_info(soup)
+        append_file(f'{wallet_address}:{bal}:{age}\n', outputFile)
 
         if bal == "-" or bal.strip == "":
             if errNotify == True:
-                send_telegram_msg(f"{target_url}\nFailed to get the balance!\nBal: {bal}\nAge: {age}")
+                send_telegram_msg(f"ERROR: Failed to get the balance!\nURL: {target_url}")
             return False
 
         if int(re.search(r'\d+', bal).group()) > BAL_LIMIT:
-            send_telegram_msg(f"{target_url}\nBal: {bal}\nAge: {age}")
+            send_telegram_msg(f"ALERT: {bal}\nURL: {target_url}")
+
+        if pro != None:
+            add_record_to_db(wallet_address, int(re.sub(r'\.[\d]*$', '', bal.replace('$', ''))), age, float(pro.replace("%", "")), sum, last)
+        else:
+            add_record_to_db(wallet_address, int(re.sub(r'\.[\d]*$', '', bal.replace('$', ''))), age, None, sum, last)
         return True
     
     except Exception as inst:
         append_file(f'{wallet_address}:ERROR2:{target_url}\n', outputFile)
         if errNotify == True:
-            send_telegram_msg(f"{target_url}\nFailed to parse the page!\n{str(inst)}")
+            send_telegram_msg(f"ERROR: Failed to parse the page!\n{str(inst)}\nURL: {target_url}")
         return False
 
 # Check input dir.
 if len(sys.argv) > 1:
     input_dir = sys.argv[1]
-    chat_id = os.path.basename(sys.argv[1])
+    chat_id = os.path.basename(sys.argv[1]) # arg!
 else:
-    print("No input dir argument!")
+    print(f"ERROR: No input dir argument!")
     exit()
 
 if not os.path.isdir(input_dir):
-    send_telegram_msg("Not exist:", input_dir)
+    send_telegram_msg(f"ERROR: failed to find '{input_dir}'")
     exit()
 
 # Create output dir.
-output_dir = input_dir.replace("input", "output")
+output_dir = input_dir.replace("input", "output") # arg!
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
 # Main loop
 while True:
-    send_telegram_msg("Begin loop!")
+    send_telegram_msg("INFO: Begin loop!")
 
     for cur_file in os.listdir(input_dir):
         if not os.path.isfile(os.path.join(input_dir, cur_file)):
@@ -252,5 +305,6 @@ while True:
                 if get_balance(wallet_address, i > 1, output_file) == True:
                     break
     
-    send_telegram_msg("End loop!")
+    send_telegram_msg("INFO: End loop!")
+    close_request_driver()
     time.sleep(60)

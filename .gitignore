@@ -1,3 +1,4 @@
 *.exe
 input
 output
+*.db
