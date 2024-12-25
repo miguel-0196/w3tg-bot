@@ -36,7 +36,7 @@ def send_telegram_msg(message):
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage?chat_id={chat_id}&text={message}"
         requests.get(url).json() # this sends the message
     else:
-        print(message)
+        print("TG>>", message)
 
 # Save as a file
 def save_file(text, filename = 'test.htm'):
@@ -102,7 +102,7 @@ driver = None
 def get_html_with_request(url, xpath = None):
     global count, driver
 
-    if count % 10 == 0:
+    if count % 20 == 0:
         driver = chrome_driver()
     count += 1
 
@@ -122,8 +122,20 @@ def parse_wallet_info(soup):
     # Find active date
     el2 = soup.find('div', attrs={'class': 'db-user-tag is-age'})
     age = el2.get_text() if el2 != None else '-'
-    
-    return bal, age
+
+    # Find change info
+    el3 = soup.find('span', attrs={'class': 'HeaderInfo_changePercent__0ze+J'})
+    pro = el3.get_text() if el3 != None else '0%'
+
+    # Top tokens in transactions
+    sum = 0
+    el4 = soup.find_all('div', attrs={'class': 'HistoryAnalysisView_topItemComponent__1pgjl'})
+    for el in el4:
+        spans = el.find_all('span')
+        if len(spans) == 2:
+            sum = sum + int(spans[1].get_text().replace("$","").replace("K","000").replace("M","000000"))
+
+    return bal, age, pro, sum
 
 # Parsing tron info
 def parse_tron_info(soup):
@@ -170,8 +182,8 @@ def get_balance(line, errNotify, outputFile):
             target_url = tron_url + wallet_address
             waiting_obj = '//*[@class="address-asset-num"]'
         else:
-            target_url = base_url + '0x' + wallet_address
-            waiting_obj = '//*[@class="UpdateButton_updateTimeNumber__9wXmw"]'
+            target_url = base_url + '0x' + wallet_address + '/history?mode=analysis'
+            waiting_obj = '//*[@class="HistoryAnalysisView_title__p6hjK"]'
             
         html = get_html_with_request(target_url, waiting_obj)
 
@@ -185,9 +197,10 @@ def get_balance(line, errNotify, outputFile):
         soup = BeautifulSoup(html, 'html.parser')
         if tron_flag == True:
             bal, age = parse_tron_info(soup)
+            append_file(f'{wallet_address}:{bal}:{age}\n', outputFile)
         else:
-            bal, age = parse_wallet_info(soup)
-        append_file(f'{wallet_address}:{bal}:{age}\n', outputFile)
+            bal, age, pro, sum = parse_wallet_info(soup)
+            append_file(f'{wallet_address}:{bal}:{age}:{pro}:{sum}\n', outputFile)
 
         if bal == "-" or bal.strip == "":
             if errNotify == True:
