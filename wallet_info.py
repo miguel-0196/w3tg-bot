@@ -4,6 +4,7 @@ import sys
 import time
 import sqlite3
 import requests
+import datetime
 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -14,19 +15,27 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # Environment variables
 load_dotenv()
-BAL_LIMIT = int(os.getenv("BAL_LIMIT")) if os.getenv("BAL_LIMIT") else 100
 TG_TOKEN = os.getenv("TG_TOKEN")
-
-# Some urls
-base_url = 'https://debank.com/profile/'
+BAL_LIMIT = int(os.getenv("BAL_LIMIT")) if os.getenv("BAL_LIMIT") else 100
+MODE_SPEED = int(os.getenv("MODE_SPEED")) if os.getenv("MODE_SPEED") else 0.6
+URL_PREFIX = os.getenv("URL_PREFIX") if os.getenv("URL_PREFIX") else 'https://debank.com/profile/'
+URL_SUFFIX = os.getenv("URL_SUFFIX") if os.getenv("URL_SUFFIX") else '/history?mode=analysis' # '?chain=bsc'
 
 # Arguments
 db_path = ''
 chat_id = "main"
 
+# Append as a file
+def log(text, filename = 'output.log'):
+    if type(text) != 'str':
+        text = str(text)
+    file = open(filename, 'a', encoding='utf-8')
+    file.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ' ' + text + '\n')
+    file.close()
+
 # Send telegram message
 def send_telegram_msg(message):
-    print("TG>>", message)
+    log(f"[TG]\t{message}")
 
     global TG_TOKEN, chat_id
     if chat_id.isdigit(): # arg!
@@ -71,10 +80,19 @@ def chrome_driver():
 # Get html content
 count = 0 # For avoid RAM overload
 driver = None
+
+def close_request_driver():
+    global driver
+    driver.close()
+    driver.quit()
+    driver = None
+
 def get_html_with_request(url, xpath = None):
     global count, driver
 
     if count % 20 == 0:
+        if driver != None:
+            close_request_driver()
         driver = chrome_driver()
     count += 1
 
@@ -84,12 +102,6 @@ def get_html_with_request(url, xpath = None):
     else:
         time.sleep(1)
     return driver.page_source
-
-def close_request_driver():
-    global count, driver
-    count = 0
-    driver.close()
-    driver.quit()
 
 # Parsing debank info
 def parse_wallet_info(soup):
@@ -111,7 +123,7 @@ def parse_wallet_info(soup):
     for el in el4:
         spans = el.find_all('span')
         if len(spans) == 2:
-            sum = sum + int(spans[1].get_text().replace("$","").replace("K","000").replace("M","000000"))
+            sum = sum + int(re.sub(r'[^\d]', '', spans[1].get_text().replace("$","").replace("K","000").replace("M","000000").replace("T","000000000").replace(",","")))
 
     # Find last time
     el5 = soup.find('div', attrs={'class': 'History_sinceTime__yW4eC'})
@@ -121,12 +133,12 @@ def parse_wallet_info(soup):
 
 def get_balance(wallet_address, errNotify):
     try:
-        target_url = base_url + '0x' + wallet_address + '/history?mode=analysis'
+        target_url = URL_PREFIX + '0x' + wallet_address
         waiting_obj = '//*[@class="HistoryAnalysisView_title__p6hjK"]'            
-        html = get_html_with_request(target_url, waiting_obj)
+        html = get_html_with_request(URL_PREFIX + '0x' + wallet_address + URL_SUFFIX, waiting_obj)
 
     except Exception as inst:
-        print(f'ERROR1: {wallet_address}')
+        log(f'[ERROR1]\t{wallet_address}')
         if errNotify == True:
             send_telegram_msg(f"ERROR: Failed to get the page!\n{str(inst)}\nURL: {target_url}")
         return False
@@ -134,33 +146,34 @@ def get_balance(wallet_address, errNotify):
     try:
         soup = BeautifulSoup(html, 'html.parser')
         bal, age, pro, sum, last = parse_wallet_info(soup)
-        print(f'INFO: {wallet_address}:{bal}')
+        log(f'[INFO]\t{wallet_address}:{bal}:{age}')
 
         if bal == "-" or bal.strip == "":
             if errNotify == True:
                 send_telegram_msg(f"ERROR: Failed to get the balance!\nURL: {target_url}")
             return False
 
+        add_record_to_db(wallet_address, int(re.sub(r'\.[\d]*$', '', bal.replace('$', ''))), age, float(pro.replace("%", "")), sum, last)
+
         if int(re.search(r'\d+', bal).group()) > BAL_LIMIT:
             send_telegram_msg(f"ALERT: {bal}\nURL: {target_url}")
 
-        add_record_to_db(wallet_address, int(re.sub(r'\.[\d]*$', '', bal.replace('$', ''))), age, float(pro.replace("%", "")), sum, last)
         return True # No need to retry
     
     except Exception as inst:
-        print(f'ERROR2: {wallet_address}')
+        log(f'[ERROR2]\t{wallet_address}')
         if errNotify == True:
             send_telegram_msg(f"ERROR: Failed to parse the page!\n{str(inst)}\nURL: {target_url}")
         return False
 
-def get_todo_wallet_list(db_name, table_name):
+def get_todo_wallet_list(db_name, table_name = 'evm', filter = '>0'):
     conn = sqlite3.connect(db_name)
     cursor = conn.cursor()
 
     query = f'''
     SELECT addr FROM "{table_name}"
-    WHERE che > 0
-    ORDER BY timestamp ASC
+    WHERE che {filter}
+    ORDER BY che DESC, timestamp ASC
     '''
 
     cursor.execute(query)
@@ -178,6 +191,7 @@ if len(sys.argv) < 2:
 
 db_path = sys.argv[1]
 chat_id = os.path.basename(db_path).replace(".db", "") # arg!
+che_filter = sys.argv[2] if len(sys.argv) > 2 else '>0'
 
 if not os.path.isfile(db_path):
     send_telegram_msg(f"ERROR: failed to find db file - '{db_path}'")
@@ -187,13 +201,13 @@ if not os.path.isfile(db_path):
 while True:
     send_telegram_msg("INFO: Begin loop!")
 
-    list = get_todo_wallet_list(db_path, 'evm')
+    list = get_todo_wallet_list(db_path, 'evm', che_filter)
 
     for row in list:
         wallet_address = row[0]
 
         for i in range(3):
-            time.sleep(1 + i * 2)
+            time.sleep(MODE_SPEED + i * 2)
             if get_balance(wallet_address, i > 1) == True:
                 break
     
