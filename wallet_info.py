@@ -17,7 +17,7 @@ from selenium.webdriver.support import expected_conditions as EC
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
 BAL_LIMIT = int(os.getenv("BAL_LIMIT")) if os.getenv("BAL_LIMIT") else 100
-MODE_SPEED = int(os.getenv("MODE_SPEED")) if os.getenv("MODE_SPEED") else 1.3
+MODE_SPEED = int(os.getenv("MODE_SPEED")) if os.getenv("MODE_SPEED") else 1.1
 URL_PREFIX = os.getenv("URL_PREFIX") if os.getenv("URL_PREFIX") else 'https://debank.com/profile/'
 URL_SUFFIX = os.getenv("URL_SUFFIX") if os.getenv("URL_SUFFIX") else '/history?mode=analysis' # '?chain=bsc'
 
@@ -31,6 +31,14 @@ def log(text, filename = 'output.log'):
         text = str(text)
     file = open(filename, 'a', encoding='utf-8')
     file.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ' ' + text + '\n')
+    file.close()
+
+# Save as a file
+def save_file(text, filename = 'test.htm'):
+    if type(text) != 'str':
+        text = str(text)
+    file = open(filename, 'w', encoding='utf-8')
+    file.write(text)
     file.close()
 
 # Send telegram message
@@ -99,7 +107,7 @@ def close_request_driver():
 def get_html_with_request(url, xpath = None):
     global count, driver
 
-    if count % 20 == 0:
+    if count % 20 == 0 or driver == None:
         if driver != None:
             close_request_driver()
         driver = chrome_driver()
@@ -146,8 +154,16 @@ def parse_wallet_info(soup):
 def get_balance(wallet_address, errNotify):
     try:
         target_url = URL_PREFIX + '0x' + wallet_address
-        waiting_obj = '//*[@class="HistoryAnalysisView_title__p6hjK"]'            
-        html = get_html_with_request(URL_PREFIX + '0x' + wallet_address + URL_SUFFIX, waiting_obj)
+        waiting_obj = '//*[@class="HistoryAnalysisView_title__p6hjK"]'
+
+        while True:
+            html = get_html_with_request(URL_PREFIX + '0x' + wallet_address + URL_SUFFIX, waiting_obj)
+            # save_file(html)
+            if html.find("Request too fast") == -1:
+                break
+            close_request_driver()
+            log(f'[ERROR3]\tRequest too fast, please try again later.')
+            time.sleep(60 * 12)
 
     except Exception as inst:
         log(f'[ERROR1]\t{wallet_address}\n{str(inst)}')
