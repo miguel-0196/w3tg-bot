@@ -17,13 +17,13 @@ from selenium.webdriver.support import expected_conditions as EC
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
 BAL_LIMIT = int(os.getenv("BAL_LIMIT")) if os.getenv("BAL_LIMIT") else 100
-MODE_SPEED = int(os.getenv("MODE_SPEED")) if os.getenv("MODE_SPEED") else 0.6
+MODE_SPEED = int(os.getenv("MODE_SPEED")) if os.getenv("MODE_SPEED") else 1.3
 URL_PREFIX = os.getenv("URL_PREFIX") if os.getenv("URL_PREFIX") else 'https://debank.com/profile/'
 URL_SUFFIX = os.getenv("URL_SUFFIX") if os.getenv("URL_SUFFIX") else '/history?mode=analysis' # '?chain=bsc'
 
 # Arguments
 db_path = ''
-chat_id = "main"
+chat_id = ''
 
 # Append as a file
 def log(text, filename = 'output.log'):
@@ -55,6 +55,13 @@ def add_record_to_db(addr, bal, age = None, pro = None, sum = None, last = None,
         INSERT INTO "{table_name}-history" (addr, bal, age, pro, sum, last) VALUES (?, ?, ?, ?, ?, ?)
     ''', (addr, bal, age, pro, sum, last))
 
+    # Query to select a specific field value
+    prev_val = 0
+    cursor.execute(f'SELECT bal FROM "{table_name}" WHERE addr = "{addr}"')
+    result = cursor.fetchone()
+    if result:
+        prev_val = result[0]
+
     # SQL command to update a record
     sql = f'UPDATE "{table_name}" SET bal=?, age=?, pro=?, sum=?, last=?, timestamp=CURRENT_TIMESTAMP WHERE addr=?'
 
@@ -65,6 +72,8 @@ def add_record_to_db(addr, bal, age = None, pro = None, sum = None, last = None,
     conn.commit()
     cursor.close()
     conn.close()
+
+    return prev_val
 
 # Chrome driver instance
 def chrome_driver():
@@ -123,7 +132,10 @@ def parse_wallet_info(soup):
     for el in el4:
         spans = el.find_all('span')
         if len(spans) == 2:
-            sum = sum + int(re.sub(r'[^\d]', '', spans[1].get_text().replace("$","").replace("K","000").replace("M","000000").replace("T","000000000").replace(",","")))
+            sum = sum + int(re.sub(r'[^\d]', '', spans[1].get_text().replace("$","").replace("K","000").replace("M","000000").replace("T","000000").replace(",","")))
+    
+    if sum > 9123456789123456789:
+        sum = 9123456789123456789 # SQLite Int Max
 
     # Find last time
     el5 = soup.find('div', attrs={'class': 'History_sinceTime__yW4eC'})
@@ -138,9 +150,9 @@ def get_balance(wallet_address, errNotify):
         html = get_html_with_request(URL_PREFIX + '0x' + wallet_address + URL_SUFFIX, waiting_obj)
 
     except Exception as inst:
-        log(f'[ERROR1]\t{wallet_address}')
+        log(f'[ERROR1]\t{wallet_address}\n{str(inst)}')
         if errNotify == True:
-            send_telegram_msg(f"ERROR: Failed to get the page!\n{str(inst)}\nURL: {target_url}")
+            send_telegram_msg(f"ERROR: Failed to get the page!\n{target_url}")
         return False
 
     try:
@@ -150,20 +162,21 @@ def get_balance(wallet_address, errNotify):
 
         if bal == "-" or bal.strip == "":
             if errNotify == True:
-                send_telegram_msg(f"ERROR: Failed to get the balance!\nURL: {target_url}")
+                send_telegram_msg(f"ERROR: Failed to get the balance!\n{target_url}")
             return False
 
-        add_record_to_db(wallet_address, int(re.sub(r'\.[\d]*$', '', bal.replace('$', ''))), age, float(pro.replace("%", "")), sum, last)
+        cur_val = int(re.sub(r'\.[\d]*$', '', bal.replace('$', ''))) # re.search(r'\d+', bal).group()
+        prev_val = add_record_to_db(wallet_address, cur_val, age, float(pro.replace("%", "")), sum, last)
 
-        if int(re.search(r'\d+', bal).group()) > BAL_LIMIT:
-            send_telegram_msg(f"ALERT: {bal}\nURL: {target_url}")
+        if abs(cur_val-prev_val) > BAL_LIMIT or cur_val > BAL_LIMIT:
+            send_telegram_msg(f"ALERT: {prev_val}->{cur_val}\n{target_url}")
 
         return True # No need to retry
     
     except Exception as inst:
-        log(f'[ERROR2]\t{wallet_address}')
+        log(f'[ERROR2]\t{wallet_address}\n{str(inst)}')
         if errNotify == True:
-            send_telegram_msg(f"ERROR: Failed to parse the page!\n{str(inst)}\nURL: {target_url}")
+            send_telegram_msg(f"ERROR: Failed to parse the page!\n{target_url}")
         return False
 
 def get_todo_wallet_list(db_name, table_name = 'evm', filter = '>0'):
@@ -213,4 +226,4 @@ while True:
     
     close_request_driver()
     send_telegram_msg("INFO: End loop!")
-    time.sleep(60)
+    time.sleep(60 * 12)
