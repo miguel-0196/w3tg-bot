@@ -75,10 +75,10 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == '__main__':
     application = ApplicationBuilder().token(TG_MY_TOKEN).build()
     
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('stop', stop))
-    application.add_handler(CommandHandler('status', status))
-    application.add_handler(CommandHandler('log', log))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo))
+    application.add_handler(CommandHandler('start', start)) # start a job with target filter arg
+    application.add_handler(CommandHandler('stop', stop))   # stop a job
+    application.add_handler(CommandHandler('status', status))   # view job status
+    application.add_handler(CommandHandler('log', log))         # view job log
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo)) # can check if bot is running
 
     application.run_polling()
