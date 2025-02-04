@@ -18,7 +18,7 @@ load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
 BAL_LIMIT = int(os.getenv("BAL_LIMIT")) if os.getenv("BAL_LIMIT") else 100
 RETRY_SPEED = int(os.getenv("RETRY_SPEED")) if os.getenv("RETRY_SPEED") else 1.1
-IDLE_SPEED = int(os.getenv("IDLE_SPEED")) if os.getenv("IDLE_SPEED") else 720
+IDLE_SPEED = int(os.getenv("IDLE_SPEED")) if os.getenv("IDLE_SPEED") else 1000
 URL_PREFIX = os.getenv("URL_PREFIX") if os.getenv("URL_PREFIX") else 'https://debank.com/profile/'
 URL_SUFFIX = os.getenv("URL_SUFFIX") if os.getenv("URL_SUFFIX") else '/history?mode=analysis' # '?chain=bsc'
 
@@ -187,6 +187,8 @@ def get_balance(wallet_address, errNotify):
 
         cur_val = int(re.sub(r'\.[\d]*$', '', bal.replace('$', ''))) # re.search(r'\d+', bal).group()
         prev_val = add_record_to_db(wallet_address, cur_val, age, float(pro.replace("%", "")), sum, last)
+        if prev_val == None:
+            prev_val = 0
 
         if abs(cur_val-prev_val) > BAL_LIMIT or cur_val > BAL_LIMIT:
             send_telegram_msg(f"ALERT: {prev_val}->{cur_val}\n{target_url}")
