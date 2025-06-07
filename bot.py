@@ -7,6 +7,11 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, filters, MessageHandler
 
+import platform
+import asyncio
+if platform.system() == 'Windows':
+   asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 # t.me/w3bankbot
 load_dotenv()
 INPUT_DIR = os.getenv("INPUT_DIR")
